@@ -8,6 +8,27 @@
 *.so
 *.dylib
 
+# Ignore build artifacts (binaries)
+dxafile
+dxafile_macos
+dxafile_windows.exe
+
+# Ignore your update helper script
+gitpush.sh
+
+# Go workspace & cache
+/bin/
+/build/
+/dist/
+
+# Ignore directories
+files/
+output/
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
+
 # Test binary, built with `go test -c`
 *.test
 
