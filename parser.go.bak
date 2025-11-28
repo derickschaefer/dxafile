@@ -1,0 +1,140 @@
+package main
+
+import (
+    "bufio"
+    "errors"
+    "fmt"
+    "io"
+    "regexp"
+    "strconv"
+    "strings"
+
+    "golang.org/x/text/encoding/unicode"
+    "golang.org/x/text/transform"
+)
+
+// Special error for lines to skip (blank, header, junk)
+var ErrSkipLine = errors.New("skip")
+
+// Regex to extract numbers and optional units (“lbs”, “%”)
+var numericRE = regexp.MustCompile(`([-+]?\d*\.?\d+)\s*(lbs|%)?`)
+
+func ParseFile(r io.Reader) ([]BodyFatRecord, error) {
+
+    // Decode UTF-16 LE → UTF-8
+    utf16bom := unicode.UTF16(unicode.LittleEndian, unicode.ExpectBOM)
+    utf8Reader := transform.NewReader(r, utf16bom.NewDecoder())
+
+    scanner := bufio.NewScanner(utf8Reader)
+    records := make([]BodyFatRecord, 0, 2048)
+
+    lineNum := 0
+
+    for scanner.Scan() {
+        raw := scanner.Text()
+        lineNum++
+
+        // Strip NUL bytes, CR, LF and normal whitespace
+        line := strings.Trim(raw, "\x00\r\n ")
+
+        if line == "" {
+            continue
+        }
+
+        rec, err := parseLine(line)
+        if err != nil {
+            if errors.Is(err, ErrSkipLine) {
+                continue
+            }
+            return nil, fmt.Errorf("parse error on line %d: %w", lineNum, err)
+        }
+
+        records = append(records, rec)
+    }
+
+    return records, scanner.Err()
+}
+
+func parseLine(line string) (BodyFatRecord, error) {
+
+    // DXA files are TAB-delimited with lots of empty fields
+    tokens := strings.Split(line, "\t")
+
+    // Clean whitespace around tokens
+    for i := range tokens {
+        tokens[i] = strings.TrimSpace(tokens[i])
+    }
+
+    // Detect header row
+    if len(tokens) > 0 && strings.Contains(tokens[0], "Last Name") {
+        return BodyFatRecord{}, ErrSkipLine
+    }
+
+    // Must have ID1, ID2, ID3, Date
+    if len(tokens) < 4 {
+        return BodyFatRecord{}, ErrSkipLine
+    }
+
+    id1 := tokens[0]
+    id2 := tokens[1]
+    id3 := tokens[2]
+    date := tokens[3]
+
+    if id1 == "" || id2 == "" || id3 == "" {
+        return BodyFatRecord{}, ErrSkipLine
+    }
+
+    rec := BodyFatRecord{
+        ID1:  id1,
+        ID2:  id2,
+        ID3:  id3,
+        Date: date,
+    }
+
+    // --------------------------------------------
+    // Extract all numeric values after column 3
+    // --------------------------------------------
+
+    data := strings.Join(tokens[4:], " ")
+
+    matches := numericRE.FindAllStringSubmatch(data, -1)
+
+    var massVals []float64
+    var pctVals []float64
+
+    for _, m := range matches {
+        numStr := m[1]
+        unit := m[2]
+
+        f, err := strconv.ParseFloat(numStr, 64)
+        if err != nil {
+            continue
+        }
+
+        if unit == "%" {
+            pctVals = append(pctVals, f)
+        } else {
+            massVals = append(massVals, f)
+        }
+    }
+
+    rec.Mass = groupMeasurements(massVals)
+    rec.Percent = groupMeasurements(pctVals)
+
+    return rec, nil
+}
+
+func groupMeasurements(vals []float64) []Measurement {
+    out := make([]Measurement, 0, len(vals)/4)
+
+    for i := 0; i+3 < len(vals); i += 4 {
+        out = append(out, Measurement{
+            Total: vals[i],
+            Left:  vals[i+1],
+            Right: vals[i+2],
+            Delta: vals[i+3],
+        })
+    }
+
+    return out
+}
